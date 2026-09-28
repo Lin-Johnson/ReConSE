@@ -1,0 +1,59 @@
+hydra:
+  run:
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+datasets:
+  name: GLDNS_LibriTTS # dataset name
+  batch_size_per_gpu: 10000  # f5-tts: 8 GPUs, 8 * 38400 = 307200    Our_dataset: 8000 *434
+  batch_size_type: frame  # frame | sample
+  max_samples: 64  # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
+  num_workers: 16
+
+optim:
+  epochs: 5
+  learning_rate: 8e-5
+  num_warmup_updates: 10000  # warmup updates
+  grad_accumulation_steps: 1  # note: updates = steps / grad_accumulation_steps
+  max_grad_norm: 1.0  # gradient clipping
+  bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
+
+model:
+  name: v66_j # model name
+  tokenizer: custom  # tokenizer type
+  tokenizer_path: ${oc.env:F5TTS_VOCAB_PATH,data/DNS_custom/vocab.txt}  # custom tokenizer vocabulary
+  pretrained_checkpoint: ${oc.env:F5TTS_BASE_CKPT,models/F5TTS_v1_Base/model_1250000.safetensors}
+  qwen_ckpt_path: ${oc.env:F5TTS_QWEN_PATH,models/Qwen3-ASR-1.7B}
+  backbone: DiT
+  control_layers: 21
+  adapter_layers: [0, 2, 4, 10, 11, 12, 13, 15, 16, 21]
+  arch:
+    dim: 1024
+    depth: 22
+    heads: 16
+    ff_mult: 2
+    text_dim: 512
+    text_mask_padding: True
+    qk_norm: null  # null | rms_norm
+    conv_layers: 4
+    pe_attn_head: null
+    attn_backend: torch  # torch | flash_attn
+    attn_mask_enabled: False
+    checkpoint_activations: False  # recompute activations and save memory for extra compute
+  mel_spec:
+    target_sample_rate: 24000
+    n_mel_channels: 100
+    hop_length: 256
+    win_length: 1024
+    n_fft: 1024
+    mel_spec_type: vocos  # vocos | bigvgan
+  vocoder:
+    is_local: True  # use local offline ckpt or not
+    local_path: ${oc.env:F5TTS_VOCOS_PATH,models/vocos-mel-24khz}   # local vocoder path
+
+ckpts:
+  logger: wandb  # wandb | tensorboard | null
+  log_samples: False  # Disable resident vocoder/sample generation during training to reduce GPU memory use
+  save_per_updates: 10000  # save checkpoint per updates (50000)
+  keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
+  last_per_updates: 10000  # save last checkpoint per updates (5000)
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
