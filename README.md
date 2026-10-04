@@ -37,15 +37,20 @@ wheels first.
 
 ## External models and paths
 
-Set local paths with environment variables before training or inference:
+All local component paths are defined in `src/f5_tts/configs/ReConSE.yaml`
+under `assets`: the F5-TTS base checkpoint, Qwen3-ASR encoder, tokenizer
+vocabulary, and Vocos checkpoint. The configuration is the source of truth
+for both training and inference. Its repository-relative defaults can be
+overridden with environment variables:
 
     export F5TTS_QWEN_PATH="$PWD/models/Qwen3-ASR-1.7B"
     export F5TTS_BASE_CKPT="$PWD/models/F5TTS_v1_Base/model_1250000.safetensors"
     export F5TTS_VOCOS_PATH="$PWD/models/vocos-mel-24khz"
     export F5TTS_VOCAB_PATH="$PWD/data/DNS_custom/vocab.txt"
 
-These are repository-relative placeholders. Replace them with paths that exist
-on the machine running the experiment.
+Alternatively, edit the `assets` entries directly. The complete ReConSE model
+checkpoint is intentionally not configured here: choose it explicitly with
+`--ckpt_file` at inference time.
 
 For WandB logging, authenticate outside the source tree:
 
@@ -82,22 +87,45 @@ configuration file or provide them through environment variables.
 
 ## Inference
 
-The directory inference script accepts a directory of degraded audio and
-writes enhanced audio to the requested output directory:
+A small DNS Challenge no-reverb example is included at:
+
+    src/f5_tts/infer/examples/dns_no_reverb/0.wav
+    src/f5_tts/infer/examples/dns_no_reverb/0.txt
+
+Set the component paths in `ReConSE.yaml` (or the environment variables above)
+and explicitly select a trained ReConSE checkpoint with `--ckpt_file`.
+
+### Without a target transcript
+
+Omit `--text_dir` to use an empty generation-text condition. The sample text
+is used only as the reference transcript; no target transcript is supplied:
 
     python src/f5_tts/infer/infer_dir.py \
         --model ReConSE \
         --model_cfg src/f5_tts/configs/ReConSE.yaml \
-        --control_audio_dir data/example/noisy \
-        --ckpt_file ckpts/model_last.pt \
-        --output_dir outputs/enhanced
+        --ckpt_file /path/to/reconse_model.pt \
+        --ref_audio infer/examples/dns_no_reverb/0.wav \
+        --ref_text "$(cat src/f5_tts/infer/examples/dns_no_reverb/0.txt)" \
+        --control_audio_dir infer/examples/dns_no_reverb \
+        --output_dir outputs/dns_no_reverb_without_text
 
-For a local Vocos checkpoint:
+### With the supplied transcript
 
-    export F5TTS_VOCOS_PATH="$PWD/models/vocos-mel-24khz"
+Use the matching text directory to provide the target text condition:
 
-The upstream F5-TTS vocoder selection remains available where supported. Vocos
-is the default for this project-specific workflow.
+    python src/f5_tts/infer/infer_dir.py \
+        --model ReConSE \
+        --model_cfg src/f5_tts/configs/ReConSE.yaml \
+        --ckpt_file /path/to/reconse_model.pt \
+        --ref_audio infer/examples/dns_no_reverb/0.wav \
+        --ref_text "$(cat src/f5_tts/infer/examples/dns_no_reverb/0.txt)" \
+        --control_audio_dir infer/examples/dns_no_reverb \
+        --text_dir infer/examples/dns_no_reverb \
+        --output_dir outputs/dns_no_reverb_with_text
+
+The inference configuration takes precedence for the vocabulary, Qwen encoder,
+and Vocos assets. `--ckpt_file` remains the explicit selector for the complete
+ReConSE checkpoint.
 
 ## Data preparation
 

@@ -17,12 +17,23 @@ optim:
   max_grad_norm: 1.0  # gradient clipping
   bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
 
+# Shared local assets. These defaults are repository-relative and can be
+# overridden through the corresponding environment variables.
+assets:
+  vocab_path: ${oc.env:F5TTS_VOCAB_PATH,data/DNS_custom/vocab.txt}
+  base_model_checkpoint: ${oc.env:F5TTS_BASE_CKPT,models/F5TTS_v1_Base/model_1250000.safetensors}
+  qwen_encoder_path: ${oc.env:F5TTS_QWEN_PATH,models/Qwen3-ASR-1.7B}
+  vocoder:
+    name: vocos
+    is_local: true
+    local_path: ${oc.env:F5TTS_VOCOS_PATH,models/vocos-mel-24khz}
+
 model:
   name: v66_j # model name
   tokenizer: custom  # tokenizer type
-  tokenizer_path: ${oc.env:F5TTS_VOCAB_PATH,data/DNS_custom/vocab.txt}  # custom tokenizer vocabulary
-  pretrained_checkpoint: ${oc.env:F5TTS_BASE_CKPT,models/F5TTS_v1_Base/model_1250000.safetensors}
-  qwen_ckpt_path: ${oc.env:F5TTS_QWEN_PATH,models/Qwen3-ASR-1.7B}
+  tokenizer_path: ${assets.vocab_path}
+  pretrained_checkpoint: ${assets.base_model_checkpoint}
+  qwen_ckpt_path: ${assets.qwen_encoder_path}
   backbone: DiT
   control_layers: 21
   adapter_layers: [0, 2, 4, 10, 11, 12, 13, 15, 16, 21]
@@ -47,8 +58,8 @@ model:
     n_fft: 1024
     mel_spec_type: vocos  # vocos | bigvgan
   vocoder:
-    is_local: True  # use local offline ckpt or not
-    local_path: ${oc.env:F5TTS_VOCOS_PATH,models/vocos-mel-24khz}   # local vocoder path
+    is_local: ${assets.vocoder.is_local}
+    local_path: ${assets.vocoder.local_path}
 
 ckpts:
   logger: wandb  # wandb | tensorboard | null

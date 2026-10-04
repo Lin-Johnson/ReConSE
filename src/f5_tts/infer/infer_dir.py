@@ -21,6 +21,7 @@ from f5_tts.infer.utils_infer import (
     fix_duration,
     infer_process,
     load_model,
+    load_qwen_encoder,
     load_vocoder,
     mel_spec_type,
     nfe_step,
@@ -201,10 +202,13 @@ config = tomli.load(open(args.config, "rb"))
 # command-line interface parameters
 
 model = args.model or config.get("model", "F5TTS_v1_Controlnet")
-ckpt_file = args.ckpt_file or config.get("ckpt_file", "")
-vocab_file = args.vocab_file or config.get("vocab_file", "")
+ckpt_file = args.ckpt_file
+if not ckpt_file:
+    parser.error("--ckpt_file is required and must point to a ReConSE checkpoint.")
 
-ref_audio = args.ref_audio or config.get("ref_audio", "infer/examples/basic/basic_ref_en.wav")
+ref_audio = args.ref_audio or config.get("ref_audio")
+if not ref_audio:
+    parser.error("--ref_audio is required for ReConSE inference.")
 control_audio = args.control_audio or config.get("control_audio", None)
 control_audio_dir = args.control_audio_dir or config.get("control_audio_dir", None)
 text_dir = args.text_dir or config.get("text_dir", None)
@@ -232,9 +236,6 @@ if save_chunk and use_legacy_text:
         "\nWarning to --save_chunk: lossy ASCII transliterations of unicode text for legacy (.wav) file names, --no_legacy_text to disable.\n"
     )
 
-load_vocoder_from_local = args.load_vocoder_from_local or config.get("load_vocoder_from_local", False)
-
-vocoder_name = args.vocoder_name or config.get("vocoder_name", mel_spec_type)
 target_rms = args.target_rms or config.get("target_rms", target_rms)
 cross_fade_duration = args.cross_fade_duration or config.get("cross_fade_duration", cross_fade_duration)
 nfe_step = args.nfe_step or config.get("nfe_step", nfe_step)
@@ -245,16 +246,23 @@ fix_duration = args.fix_duration or config.get("fix_duration", fix_duration)
 device = args.device or config.get("device", device)
 
 
-# patches for pip pkg user
-if "infer/examples/" in ref_audio:
-    ref_audio = str(files("f5_tts").joinpath(f"{ref_audio}"))
-if "infer/examples/" in gen_file:
-    gen_file = str(files("f5_tts").joinpath(f"{gen_file}"))
+# Resolve bundled examples consistently for audio and matching text directories.
+def resolve_packaged_example(path):
+    if path and Path(path).as_posix().startswith("infer/examples/"):
+        return str(files("f5_tts").joinpath(path))
+    return path
+
+
+ref_audio = resolve_packaged_example(ref_audio)
+control_audio = resolve_packaged_example(control_audio)
+control_audio_dir = resolve_packaged_example(control_audio_dir)
+text_dir = resolve_packaged_example(text_dir)
+gen_file = resolve_packaged_example(gen_file)
+
 if "voices" in config:
     for voice in config["voices"]:
         voice_ref_audio = config["voices"][voice]["ref_audio"]
-        if "infer/examples/" in voice_ref_audio:
-            config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
+        config["voices"][voice]["ref_audio"] = resolve_packaged_example(voice_ref_audio)
 
 
 # ignore gen_text if gen_file provided
@@ -273,22 +281,38 @@ if save_chunk:
         os.makedirs(output_chunk_dir)
 
 
-# load vocoder
-
-if vocoder_name == "vocos":
-    vocoder_local_path = "../checkpoints/vocos-mel-24khz"
-elif vocoder_name == "bigvgan":
-    vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
-
-vocoder = load_vocoder(
-    vocoder_name=vocoder_name, is_local=load_vocoder_from_local, local_path=vocoder_local_path, device=device
-)
-
-
 # load TTS model
-model_cfg = OmegaConf.load(
-    args.model_cfg or config.get("model_cfg", str(files("f5_tts").joinpath(f"configs/{model}.yaml")))
+model_cfg_path = args.model_cfg or config.get(
+    "model_cfg", str(files("f5_tts").joinpath(f"configs/{model}.yaml"))
 )
+model_cfg = OmegaConf.load(model_cfg_path)
+
+assets_cfg = model_cfg.get("assets", {})
+vocoder_cfg = assets_cfg.get("vocoder", model_cfg.model.get("vocoder", {}))
+
+# ReConSE component assets are configured in ReConSE.yaml. Legacy CLI and TOML
+# values are only used as fallbacks when a configuration does not provide them.
+vocab_file = str(
+    assets_cfg.get("vocab_path")
+    or model_cfg.model.get("tokenizer_path")
+    or args.vocab_file
+    or config.get("vocab_file", "")
+)
+qwen_ckpt_path = str(
+    assets_cfg.get("qwen_encoder_path") or model_cfg.model.get("qwen_ckpt_path", "")
+)
+vocoder_name = str(
+    vocoder_cfg.get("name") or model_cfg.model.mel_spec.mel_spec_type
+)
+load_vocoder_from_local = bool(vocoder_cfg.get("is_local", False))
+vocoder_local_path = str(vocoder_cfg.get("local_path", ""))
+
+if not vocab_file:
+    parser.error("No vocabulary path is configured in the model configuration.")
+if not qwen_ckpt_path:
+    parser.error("No Qwen encoder path is configured in the model configuration.")
+if load_vocoder_from_local and not vocoder_local_path:
+    parser.error("No local vocoder path is configured in the model configuration.")
 
 model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
 model_arc = model_cfg.model.arch
@@ -302,13 +326,14 @@ if model != "F5TTS_Base":
 
 print(f"Using {model}...")
 
-# Define the shared Qwen checkpoint path.
-QWEN_CKPT_PATH = os.getenv(
-    "F5TTS_QWEN_PATH",
-    str(Path(__file__).resolve().parents[3] / "models" / "Qwen3-ASR-1.7B"),
+vocoder = load_vocoder(
+    vocoder_name=vocoder_name,
+    is_local=load_vocoder_from_local,
+    local_path=vocoder_local_path,
+    device=device,
 )
+load_qwen_encoder(qwen_ckpt_path, device=device)
 
-# Forward qwen_ckpt_path so utils_infer can initialize the adapters.
 ema_model = load_model(
     model_cls, 
     model_arc, 
@@ -318,7 +343,7 @@ ema_model = load_model(
     device=device, 
     control_layers=control_layers,
     adapter_layers=adapter_layers,
-    qwen_ckpt_path=QWEN_CKPT_PATH
+    qwen_ckpt_path=qwen_ckpt_path,
 )
 
 
@@ -358,11 +383,11 @@ def load_text_from_dir(text_dir, audio_files):
 
 def main():
     # --- 1. Determine the control-audio source. ---
-    if args.control_audio_dir:
-        control_dir = Path(args.control_audio_dir)
+    if control_audio_dir:
+        control_dir = Path(control_audio_dir)
         control_files = sorted(list(control_dir.glob("*.wav")))  # Sort files for reproducible progress.
         if not control_files:
-            print(f"Error: no .wav files found in {args.control_audio_dir}")
+            print(f"Error: no .wav files found in {control_audio_dir}")
             return
     else:
         control_files = [Path(control_audio)] if control_audio else []
@@ -371,8 +396,8 @@ def main():
             return
 
     # --- 2. Load text files. ---
-    if args.text_dir:
-        text_dict = load_text_from_dir(args.text_dir, control_files)
+    if text_dir:
+        text_dict = load_text_from_dir(text_dir, control_files)
     else:
         text_dict = {Path(f).stem: gen_text for f in control_files}
         print(f"Using global text: {gen_text[:50]}...")
@@ -388,8 +413,7 @@ def main():
     processed_ref_audio, processed_ref_text = preprocess_ref_audio_text(ref_audio, ref_text)
     print(f"CFG strength: {cfg_strength}")
 
-    # Use the shared variables defined above.
-    qwen_fe = WhisperFeatureExtractor.from_pretrained(QWEN_CKPT_PATH)
+    qwen_fe = WhisperFeatureExtractor.from_pretrained(qwen_ckpt_path)
 
     # --- 4. Process files sequentially. ---
     skip_count = 0

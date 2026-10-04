@@ -53,18 +53,25 @@ device = (
 tempfile_kwargs = {"delete_on_close": False} if sys.version_info >= (3, 12) else {"delete": False}
 
 from f5_tts.model.qwen_encoder import Qwen3ASRAudioEncoder
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-QWAN_ASR_PATH = os.getenv(
-    "F5TTS_QWEN_PATH",
-    str(PROJECT_ROOT / "models" / "Qwen3-ASR-1.7B"),
-)
-qwen_encoder = Qwen3ASRAudioEncoder.from_qwen3_asr_pretrained(
-    QWAN_ASR_PATH,
-    dtype=torch.float32,
-    device="cuda",
-    attn_implementation="eager"
-)
-qwen_encoder.eval()
+qwen_encoder = None
+_qwen_encoder_path = None
+
+
+def load_qwen_encoder(qwen_ckpt_path, device=device):
+    """Load the Qwen audio encoder lazily from the configured checkpoint path."""
+    global qwen_encoder, _qwen_encoder_path
+
+    qwen_ckpt_path = str(qwen_ckpt_path)
+    if qwen_encoder is None or _qwen_encoder_path != qwen_ckpt_path:
+        qwen_encoder = Qwen3ASRAudioEncoder.from_qwen3_asr_pretrained(
+            qwen_ckpt_path,
+            dtype=torch.float32,
+            device=device,
+            attn_implementation="eager",
+        )
+        _qwen_encoder_path = qwen_ckpt_path
+
+    return qwen_encoder.eval().to(device)
 
 # -----------------------------------------
 
@@ -571,6 +578,11 @@ def infer_batch_process(
     
         feature_lens = qwen_feats["attention_mask"].sum(dim=-1).to(device)
 
+        if qwen_encoder is None:
+            raise RuntimeError(
+                "Qwen encoder is not initialized. Call load_qwen_encoder() before inference."
+            )
+
         with torch.no_grad():
             qwen_out = qwen_encoder(
                 input_features, 
@@ -579,6 +591,8 @@ def infer_batch_process(
             )
         
         qwen_feat = qwen_out.hidden_states[18]
+        if qwen_feat.ndim == 2:
+            qwen_feat = qwen_feat.unsqueeze(0)
         qwen_feat_mask = torch.ones(
             qwen_feat.shape[:2], device=qwen_feat.device, dtype=torch.bool
         )
